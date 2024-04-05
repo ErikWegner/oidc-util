@@ -1,6 +1,6 @@
 use axum::{
     extract::{Query, State},
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     Router,
 };
 use reqwest::Client;
@@ -18,7 +18,14 @@ use tokio::{
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize)]
-struct Config {
+struct ConfigCC {
+    client_id: String,
+    client_secret: String,
+    token_endpoint: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ConfigAC {
     client_id: String,
     client_secret: String,
     token_endpoint: String,
@@ -30,7 +37,7 @@ struct Config {
 struct AppState {
     tx: Sender<i32>,
     redirect_uri: String,
-    config: Config,
+    config: ConfigAC,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,7 +49,6 @@ pub(crate) struct CallbackQueryParams {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration from .env file
     dotenvy::dotenv().ok();
-    let config = load_config();
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -54,10 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match grant_type.as_str() {
         "client_credentials" => {
+            let config = load_config_cc();
             let access_token = get_client_credentials_token(&config).await?;
             println!("Access Token: {}", access_token);
         }
         "authorization_code" => {
+            let config = load_config_ac();
             println!("Starting callback handler");
             start_http_server(&config).await?;
         }
@@ -67,8 +75,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn load_config() -> Config {
-    Config {
+fn load_config_cc() -> ConfigCC {
+    ConfigCC {
+        client_id: env::var("CLIENT_ID").expect("CLIENT_ID must be set"),
+        client_secret: env::var("CLIENT_SECRET").expect("CLIENT_SECRET must be set"),
+        token_endpoint: env::var("TOKEN_ENDPOINT").expect("TOKEN_ENDPOINT must be set"),
+    }
+}
+
+fn load_config_ac() -> ConfigAC {
+    ConfigAC {
         client_id: env::var("CLIENT_ID").expect("CLIENT_ID must be set"),
         client_secret: env::var("CLIENT_SECRET").expect("CLIENT_SECRET must be set"),
         token_endpoint: env::var("TOKEN_ENDPOINT").expect("TOKEN_ENDPOINT must be set"),
@@ -82,7 +98,7 @@ fn load_config() -> Config {
 }
 
 async fn get_client_credentials_token(
-    config: &Config,
+    config: &ConfigCC,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = Client::new();
     let params = [("grant_type", "client_credentials")];
@@ -122,7 +138,8 @@ async fn shutdown_signal(mut rx: Receiver<i32>) {
         _ = rx.recv() => {},
     }
 }
-fn build_authorization_url(config: &Config, callback_url: &str) -> String {
+
+fn build_authorization_url(config: &ConfigAC, callback_url: &str) -> String {
     let mut url = Url::parse(&config.authorization_endpoint).unwrap();
     url.query_pairs_mut()
         .append_pair("client_id", &config.client_id)
@@ -132,7 +149,7 @@ fn build_authorization_url(config: &Config, callback_url: &str) -> String {
     url.into()
 }
 
-async fn start_http_server(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_http_server(config: &ConfigAC) -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::new(IpAddr::from_str("::")?, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -166,7 +183,7 @@ async fn start_http_server(config: &Config) -> Result<(), Box<dyn std::error::Er
 async fn handle_request(
     callback_query_params: Query<CallbackQueryParams>,
     State(app_state): State<Arc<AppState>>,
-) -> Result<axum::response::Response, axum::response::Response> {
+) -> Result<Html<String>, axum::response::Response> {
     let access_token = get_authorization_code_token(
         &app_state.config,
         &callback_query_params.code,
@@ -180,11 +197,11 @@ async fn handle_request(
         .send(if access_token.is_err() { 1 } else { 0 })
         .await;
     println!("Access Token: {}", access_token?);
-    Ok("You can close this window now".into_response())
+    Ok(Html("<html>You can close this window now. Or <a href=\"https://login.qwirl.de/realms/BRB/protocol/openid-connect/logout\">logout</a>.</html>".to_string()))
 }
 
 async fn get_authorization_code_token(
-    config: &Config,
+    config: &ConfigAC,
     code: &str,
     redirect_uri: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
