@@ -154,12 +154,12 @@ async fn start_http_server(config: &Config) -> Result<(), Box<dyn std::error::Er
             .await
             .unwrap();
     });
-    let auth_url = build_authorization_url(&config, &redirect_uri);
+    let auth_url = build_authorization_url(config, &redirect_uri);
     println!("Opening browser for authentication...");
     open::that(auth_url)?;
 
     println!("Waiting for authorization code callback...");
-    server_task.await;
+    let _ = server_task.await;
     Ok(())
 }
 
