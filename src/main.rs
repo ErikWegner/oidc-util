@@ -91,7 +91,7 @@ fn load_config_ac() -> ConfigAC {
         authorization_endpoint: env::var("AUTHORIZATION_ENDPOINT")
             .expect("AUTHORIZATION_ENDPOINT must be set"),
         port: env::var("PORT")
-            .map_or_else(|_| "8000".to_string(), |p| p.to_string())
+            .map_or_else(|_| "37080".to_string(), |p| p.to_string())
             .parse::<u16>()
             .expect("Cannot parse PORT"),
     }
