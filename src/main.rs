@@ -52,7 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        println!("Usage: {} [client_credentials|authorization_code]", args[0]);
+        println!(
+            "Usage: {} [client_credentials|authorization_code|version]",
+            args[0]
+        );
         return Ok(());
     }
 
@@ -62,12 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "client_credentials" => {
             let config = load_config_cc();
             let access_token = get_client_credentials_token(&config).await?;
-            println!("Access Token: {}", access_token);
+            println!("{}", access_token);
         }
         "authorization_code" => {
             let config = load_config_ac();
             println!("Starting callback handler");
             start_http_server(&config).await?;
+        }
+        "version" => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
         }
         _ => println!("Invalid grant type specified"),
     }
@@ -75,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Load configuration from `.env` file for client credentials flow
 fn load_config_cc() -> ConfigCC {
     ConfigCC {
         client_id: env::var("CLIENT_ID").expect("CLIENT_ID must be set"),
@@ -83,6 +90,7 @@ fn load_config_cc() -> ConfigCC {
     }
 }
 
+/// Load configuration from `.env` file for authorization code flow
 fn load_config_ac() -> ConfigAC {
     ConfigAC {
         client_id: env::var("CLIENT_ID").expect("CLIENT_ID must be set"),
@@ -97,6 +105,7 @@ fn load_config_ac() -> ConfigAC {
     }
 }
 
+/// Get access token through client credentials flow
 async fn get_client_credentials_token(
     config: &ConfigCC,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -114,6 +123,7 @@ async fn get_client_credentials_token(
     Ok(token_response["access_token"].as_str().unwrap().to_string())
 }
 
+/// Handle Ctrl+C and SIGTERM signals
 async fn shutdown_signal(mut rx: Receiver<i32>) {
     let ctrl_c = async {
         signal::ctrl_c()
@@ -139,6 +149,7 @@ async fn shutdown_signal(mut rx: Receiver<i32>) {
     }
 }
 
+/// Prepare authorization URL
 fn build_authorization_url(config: &ConfigAC, callback_url: &str) -> String {
     let mut url = Url::parse(&config.authorization_endpoint).unwrap();
     url.query_pairs_mut()
@@ -149,6 +160,7 @@ fn build_authorization_url(config: &ConfigAC, callback_url: &str) -> String {
     url.into()
 }
 
+/// Start HTTP server for authorization code flow
 async fn start_http_server(config: &ConfigAC) -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::new(IpAddr::from_str("::")?, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -180,6 +192,7 @@ async fn start_http_server(config: &ConfigAC) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+/// Handle authorization code callback
 async fn handle_request(
     callback_query_params: Query<CallbackQueryParams>,
     State(app_state): State<Arc<AppState>>,
@@ -196,10 +209,11 @@ async fn handle_request(
         .tx
         .send(if access_token.is_err() { 1 } else { 0 })
         .await;
-    println!("Access Token: {}", access_token?);
+    println!("{}", access_token?);
     Ok(Html("<html>You can close this window now. Or <a href=\"https://login.qwirl.de/realms/BRB/protocol/openid-connect/logout\">logout</a>.</html>".to_string()))
 }
 
+/// Get access token through authorization code flow
 async fn get_authorization_code_token(
     config: &ConfigAC,
     code: &str,
