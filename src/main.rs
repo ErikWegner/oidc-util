@@ -3,6 +3,7 @@ use axum::{
     response::{Html, IntoResponse},
     Router,
 };
+use color_eyre::eyre::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::{
@@ -46,9 +47,15 @@ pub(crate) struct CallbackQueryParams {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load configuration from .env file
-    dotenvy::dotenv().ok();
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+    let filename = env::var("OIDC_ENVFILE").unwrap_or_default();
+    if !filename.is_empty() {
+        dotenvy::from_filename(&filename).ok();
+    } else {
+        // Load configuration from .env file
+        let _ = dotenvy::dotenv();
+    }
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -63,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match grant_type.as_str() {
         "client_credentials" => {
-            let config = load_config_cc();
+            let config = load_config_cc()?;
             let access_token = get_client_credentials_token(&config).await?;
             println!("{}", access_token);
         }
@@ -82,12 +89,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Load configuration from `.env` file for client credentials flow
-fn load_config_cc() -> ConfigCC {
-    ConfigCC {
-        client_id: env::var("CLIENT_ID").expect("CLIENT_ID must be set"),
-        client_secret: env::var("CLIENT_SECRET").expect("CLIENT_SECRET must be set"),
-        token_endpoint: env::var("TOKEN_ENDPOINT").expect("TOKEN_ENDPOINT must be set"),
-    }
+fn load_config_cc() -> Result<ConfigCC> {
+    Ok(ConfigCC {
+        client_id: env::var("CLIENT_ID").context("CLIENT_ID must be set")?,
+        client_secret: env::var("CLIENT_SECRET").context("CLIENT_SECRET must be set")?,
+        token_endpoint: env::var("TOKEN_ENDPOINT").context("TOKEN_ENDPOINT must be set")?,
+    })
 }
 
 /// Load configuration from `.env` file for authorization code flow
@@ -106,9 +113,7 @@ fn load_config_ac() -> ConfigAC {
 }
 
 /// Get access token through client credentials flow
-async fn get_client_credentials_token(
-    config: &ConfigCC,
-) -> Result<String, Box<dyn std::error::Error>> {
+async fn get_client_credentials_token(config: &ConfigCC) -> Result<String> {
     let client = Client::new();
     let params = [("grant_type", "client_credentials")];
 
@@ -161,7 +166,7 @@ fn build_authorization_url(config: &ConfigAC, callback_url: &str) -> String {
 }
 
 /// Start HTTP server for authorization code flow
-async fn start_http_server(config: &ConfigAC) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_http_server(config: &ConfigAC) -> Result<()> {
     let addr = SocketAddr::new(IpAddr::from_str("::")?, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
