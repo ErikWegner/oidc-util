@@ -1,6 +1,6 @@
 [package]
 name = "oidc-util"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,7 +9,7 @@ edition = "2021"
 axum = "0.7.5"
 color-eyre = "0.6"
 dotenvy = "0.15"
-open = "5.1.2"
+open = "5.3.0"
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "json",

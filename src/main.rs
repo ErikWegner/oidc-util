@@ -51,7 +51,8 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
     let filename = env::var("OIDC_ENVFILE").unwrap_or_default();
     if !filename.is_empty() {
-        dotenvy::from_filename(&filename).ok();
+        dotenvy::from_filename(&filename)
+            .wrap_err_with(|| format!("Failed to read settings from file {}", filename))?;
     } else {
         // Load configuration from .env file
         let _ = dotenvy::dotenv();
