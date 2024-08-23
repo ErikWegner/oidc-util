@@ -3,7 +3,7 @@ use axum::{
     response::{Html, IntoResponse},
     Router,
 };
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{eyre, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::{
@@ -70,17 +70,17 @@ async fn main() -> Result<()> {
     let grant_type = &args[1];
 
     match grant_type.as_str() {
-        "client_credentials" => {
+        "c" | "client_credentials" => {
             let config = load_config_cc()?;
             let access_token = get_client_credentials_token(&config).await?;
             println!("{}", access_token);
         }
-        "authorization_code" => {
+        "a" | "authorization_code" => {
             let config = load_config_ac();
             println!("Starting callback handler");
             start_http_server(&config).await?;
         }
-        "version" => {
+        "v" | "version" => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
         _ => println!("Invalid grant type specified"),
@@ -125,8 +125,24 @@ async fn get_client_credentials_token(config: &ConfigCC) -> Result<String> {
         .send()
         .await?;
 
+    if response.status().is_client_error() || response.status().is_server_error() {
+        return Err(eyre!(
+            "Request failed: {}. Is client `{}` configured for client credentials grant?",
+            response.status(),
+            config.client_id
+        ));
+    }
+
     let token_response: serde_json::Value = response.json().await?;
-    Ok(token_response["access_token"].as_str().unwrap().to_string())
+    Ok(token_response["access_token"]
+        .as_str()
+        .ok_or_else(|| {
+            eyre!(
+                "No access token provided. Is client `{}` configured for client credentials grant?",
+                config.client_id
+            )
+        })?
+        .to_string())
 }
 
 /// Handle Ctrl+C and SIGTERM signals
@@ -171,9 +187,9 @@ async fn start_http_server(config: &ConfigAC) -> Result<()> {
     let addr = SocketAddr::new(IpAddr::from_str("::")?, config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .expect("Cannot start server");
+        .wrap_err_with(|| format!("Cannot start server at http://{addr}"))?;
     let (tx, rx) = mpsc::channel(1);
-    let redirect_uri = format!("http://127.0.0.1:{}/callback", addr.port());
+    let redirect_uri = format!("http://localhost:{}/callback", addr.port());
     let app_state = Arc::new(AppState {
         tx,
         redirect_uri: redirect_uri.clone(),
@@ -191,6 +207,7 @@ async fn start_http_server(config: &ConfigAC) -> Result<()> {
     });
     let auth_url = build_authorization_url(config, &redirect_uri);
     println!("Opening browser for authentication...");
+    println!("{}", auth_url);
     open::that(auth_url)?;
 
     println!("Waiting for authorization code callback...");
