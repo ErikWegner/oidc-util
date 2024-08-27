@@ -29,6 +29,7 @@ struct ConfigCC {
 struct ConfigAC {
     client_id: String,
     client_secret: String,
+    scope: String,
     token_endpoint: String,
     authorization_endpoint: String,
     port: u16,
@@ -76,7 +77,7 @@ async fn main() -> Result<()> {
             println!("{}", access_token);
         }
         "a" | "authorization_code" => {
-            let config = load_config_ac();
+            let config = load_config_ac()?;
             println!("Starting callback handler");
             start_http_server(&config).await?;
         }
@@ -99,18 +100,23 @@ fn load_config_cc() -> Result<ConfigCC> {
 }
 
 /// Load configuration from `.env` file for authorization code flow
-fn load_config_ac() -> ConfigAC {
-    ConfigAC {
-        client_id: env::var("CLIENT_ID").expect("CLIENT_ID must be set"),
-        client_secret: env::var("CLIENT_SECRET").expect("CLIENT_SECRET must be set"),
-        token_endpoint: env::var("TOKEN_ENDPOINT").expect("TOKEN_ENDPOINT must be set"),
+fn load_config_ac() -> Result<ConfigAC> {
+    let mut scope = env::var("SCOPE").unwrap_or_default();
+    if scope.is_empty() {
+        scope = "openid profile email".to_string();
+    };
+    Ok(ConfigAC {
+        client_id: env::var("CLIENT_ID").context("CLIENT_ID must be set")?,
+        client_secret: env::var("CLIENT_SECRET").context("CLIENT_SECRET must be set")?,
+        scope,
+        token_endpoint: env::var("TOKEN_ENDPOINT").context("TOKEN_ENDPOINT must be set")?,
         authorization_endpoint: env::var("AUTHORIZATION_ENDPOINT")
-            .expect("AUTHORIZATION_ENDPOINT must be set"),
+            .context("AUTHORIZATION_ENDPOINT must be set")?,
         port: env::var("PORT")
             .map_or_else(|_| "37080".to_string(), |p| p.to_string())
             .parse::<u16>()
-            .expect("Cannot parse PORT"),
-    }
+            .context("Cannot parse PORT")?,
+    })
 }
 
 /// Get access token through client credentials flow
@@ -177,6 +183,7 @@ fn build_authorization_url(config: &ConfigAC, callback_url: &str) -> String {
     url.query_pairs_mut()
         .append_pair("client_id", &config.client_id)
         .append_pair("redirect_uri", callback_url)
+        .append_pair("scope", &config.scope)
         .append_pair("response_type", "code");
 
     url.into()
