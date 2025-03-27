@@ -13,4 +13,5 @@ the file.
 ## Usage
 
 - `oidc-util authorization_code` or
-- `oidc-util client_credentials`
+- `oidc-util client_credentials` or
+- `oidc-util device_authorization`

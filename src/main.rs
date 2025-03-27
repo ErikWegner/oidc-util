@@ -7,10 +7,12 @@ use color_eyre::eyre::{eyre, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::{
+    collections::HashMap,
     env,
     net::{IpAddr, SocketAddr},
     str::FromStr,
     sync::Arc,
+    time::{Duration, Instant},
 };
 use tokio::{
     signal,
@@ -18,14 +20,27 @@ use tokio::{
 };
 use url::Url;
 
-#[derive(Clone, Debug, Deserialize)]
+/// Client credentials flow configuration
+#[derive(Clone, Debug)]
 struct ConfigCC {
     client_id: String,
     client_secret: String,
+    scope: Option<String>,
     token_endpoint: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+/// Device code flow configuration
+#[derive(Clone, Debug)]
+struct ConfigDC {
+    client_id: String,
+    client_secret: String,
+    scope: Option<String>,
+    token_endpoint: String,
+    device_authorization_endpoint: String,
+}
+
+/// Authorization code flow configuration
+#[derive(Clone, Debug)]
 struct ConfigAC {
     client_id: String,
     client_secret: String,
@@ -33,6 +48,14 @@ struct ConfigAC {
     token_endpoint: String,
     authorization_endpoint: String,
     port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    verification_uri_complete: String,
+    expires_in: u32,
+    interval: u64,
 }
 
 #[derive(Debug)]
@@ -62,7 +85,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!(
-            "Usage: {} [client_credentials|authorization_code|version]",
+            "Usage: {} [client_credentials|device_authorization|authorization_code|version]",
             args[0]
         );
         return Ok(());
@@ -74,6 +97,11 @@ async fn main() -> Result<()> {
         "c" | "client_credentials" => {
             let config = load_config_cc()?;
             let access_token = get_client_credentials_token(&config).await?;
+            println!("{}", access_token);
+        }
+        "d" | "device_authorization" => {
+            let config = load_config_dc()?;
+            let access_token = get_device_authorization_token(&config).await?;
             println!("{}", access_token);
         }
         "a" | "authorization_code" => {
@@ -95,6 +123,19 @@ fn load_config_cc() -> Result<ConfigCC> {
     Ok(ConfigCC {
         client_id: env::var("CLIENT_ID").context("CLIENT_ID must be set")?,
         client_secret: env::var("CLIENT_SECRET").context("CLIENT_SECRET must be set")?,
+        scope: env::var("SCOPE").ok(),
+        token_endpoint: env::var("TOKEN_ENDPOINT").context("TOKEN_ENDPOINT must be set")?,
+    })
+}
+
+/// Load configuration from `.env` file for device code flow
+fn load_config_dc() -> Result<ConfigDC> {
+    Ok(ConfigDC {
+        client_id: env::var("CLIENT_ID").context("CLIENT_ID must be set")?,
+        client_secret: env::var("CLIENT_SECRET").context("CLIENT_SECRET must be set")?,
+        device_authorization_endpoint: env::var("DEVICE_AUTHORIZATION_ENDPOINT")
+            .context("DEVICE_AUTHORIZATION_ENDPOINT must be set")?,
+        scope: env::var("SCOPE").ok(),
         token_endpoint: env::var("TOKEN_ENDPOINT").context("TOKEN_ENDPOINT must be set")?,
     })
 }
@@ -122,7 +163,13 @@ fn load_config_ac() -> Result<ConfigAC> {
 /// Get access token through client credentials flow
 async fn get_client_credentials_token(config: &ConfigCC) -> Result<String> {
     let client = Client::new();
-    let params = [("grant_type", "client_credentials")];
+    let mut params = HashMap::new();
+    params.insert("grant_type", "client_credentials");
+
+    // Add scope if provided
+    if let Some(ref scope) = config.scope {
+        params.insert("scope", scope);
+    }
 
     let response = client
         .post(&config.token_endpoint)
@@ -149,6 +196,102 @@ async fn get_client_credentials_token(config: &ConfigCC) -> Result<String> {
             )
         })?
         .to_string())
+}
+
+/// Get access token through device code flow
+async fn get_device_authorization_token(config: &ConfigDC) -> Result<String> {
+    let client = Client::new();
+    let mut params = HashMap::new();
+    params.insert("client_id", &config.client_id);
+    params.insert("client_secret", &config.client_secret);
+
+    // Add scope if provided
+    if let Some(ref scope) = config.scope {
+        params.insert("scope", scope);
+    }
+
+    let response = client
+        .post(&config.device_authorization_endpoint)
+        .form(&params)
+        .send()
+        .await?;
+
+    if response.status().is_client_error() || response.status().is_server_error() {
+        return Err(eyre!(
+            "Request failed: {}. Is client `{}` configured for device authorization grant?",
+            response.status(),
+            config.client_id
+        ));
+    }
+
+    let device_code_response: DeviceAuthorizationResponse = response
+        .json()
+        .await
+        .context("Reading device authorization response")?;
+
+    let grant_type = "urn:ietf:params:oauth:grant-type:device_code".to_string();
+    params.insert("device_code", &device_code_response.device_code);
+    params.insert("grant_type", &grant_type);
+
+    println!("Opening browser for authentication...");
+    println!("{}", device_code_response.verification_uri_complete);
+    open::that(device_code_response.verification_uri_complete)?;
+
+    let polling_timeout = Duration::from_secs(device_code_response.expires_in as u64);
+    let polling_start = Instant::now();
+    let mut token_response = None;
+    // Poll for device code authorization
+    loop {
+        if token_response.is_some() {
+            break;
+        }
+
+        // if polling_timeout is up, break the loop
+        if Instant::now().duration_since(polling_start) >= polling_timeout {
+            return Err(eyre!("Device authorization timed out"));
+        }
+
+        let response = client
+            .post(&config.token_endpoint)
+            .form(&params)
+            .send()
+            .await?;
+
+        let response_status = response.status();
+        if response_status.is_client_error() || response_status.is_server_error() {
+            if response.status() == 400 {
+                let j = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .context("Reading polling response")?;
+                let error_description = j.get("error").and_then(|e| e.as_str()).unwrap_or_default();
+                if error_description == "authorization_pending" {
+                    tokio::time::sleep(Duration::from_secs(device_code_response.interval)).await;
+                    continue;
+                }
+            }
+
+            return Err(eyre!(
+                "Request failed: {}. Is client `{}` configured for device authorization grant?",
+                response_status,
+                config.client_id
+            ));
+        }
+
+        let token_response2: serde_json::Value = response.json().await?;
+        token_response = Some(token_response2["access_token"]
+            .as_str()
+            .ok_or_else(|| {
+                eyre!(
+                "No access token provided. Is client `{}` configured for device authorization grant?",
+                config.client_id
+            )
+            })?
+            .to_string())
+    }
+
+    // return the access token or an error if none is received
+    token_response.ok_or_else(|| eyre!("No access token received after polling"))
 }
 
 /// Handle Ctrl+C and SIGTERM signals
